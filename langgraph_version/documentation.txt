@@ -1,0 +1,201 @@
+🌟 Project Overview
+This project creates a smart E-commerce Customer Service Assistant using modern AI and web technologies. The assistant can understand user requests, check order statuses, and track shipments by using external tools.
+
+Core Logic: Built with LangGraph, a library for creating complex, stateful AI agents that can reason and use tools in multiple steps.
+
+AI Model: Powered by Groq for incredibly fast language model responses.
+
+Web Server: Served via FastAPI, creating a robust API that can be easily accessed by a website or mobile app.
+
+The agent is designed to be conversational and helpful. If a user asks, "Where is my order?", the agent knows it first needs to ask for an Order ID. Once it has the ID, it uses a tool to look up the order, finds the Tracking ID, and then uses another tool to get the current shipping location, delivering a complete answer to the user.
+
+🧠 agent.py - The Agent's Brain
+This file is the heart of the assistant. It defines the agent's structure, its reasoning process, and how it decides what to do next.
+
+Purpose: To define the LangGraph agent, its states, and the workflow that connects the AI model to the tools.
+
+Key Components:
+AgentState (TypedDict)
+
+This is like the agent's short-term memory. It's a simple dictionary that holds the messages of the conversation.
+
+Annotated[Sequence[BaseMessage], add_messages] is a special instruction for LangGraph. It means that whenever new messages are generated, they should be added to the existing list of messages, not replace them. This is how the conversation history is maintained within a single run.
+
+EcommerceAgent (Class)
+
+This class encapsulates everything needed for the agent to function.
+
+__init__(self, ...): The constructor initializes the agent.
+
+self.model = ChatGroq(...).bind_tools(ALL_TOOLS): It sets up the Groq language model and, crucially, tells the model about the available tools (lookup_order_status, lookup_transit_status). This "binding" allows the model to decide when and how to call these tools.
+
+self.agent = self._build_graph(): It calls the internal method to construct the agent's workflow graph.
+
+_build_graph(self): This is where the magic of LangGraph happens. It defines the step-by-step logic.
+
+graph = StateGraph(AgentState): It creates a new "state graph" that will operate on the AgentState memory.
+
+graph.add_node("agent", ...): Adds a node named "agent". This node's job is to call the AI model.
+
+graph.add_node("tools", ...): Adds a node named "tools". This node's job is to execute the functions from tools.py.
+
+graph.set_entry_point("agent"): Specifies that whenever the graph starts, it should begin at the "agent" node.
+
+graph.add_conditional_edges(...): This sets up the decision-making. After the "agent" node runs, it calls the _should_continue function to decide where to go next:
+
+If the model decides to call a tool, the graph moves to the "tools" node.
+
+If the model generates a final answer (without needing a tool), the graph moves to "end" and finishes.
+
+graph.add_edge("tools", "agent"): After the "tools" node runs, the result is sent back to the "agent" node so the model can process the tool's output and decide what to do next.
+
+_model_call(self, state): This function defines what happens in the "agent" node. It takes the current state (the conversation history), adds a detailed System Prompt to guide the AI, and invokes the model. The System Prompt is a set of instructions that tells the AI its persona and rules (e.g., "You are a helpful ecommerce assistant...", "Ask for the order ID...").
+
+_should_continue(self, state): This function is the router. It checks the last message from the model. If that message contains a tool_calls attribute, it means the model wants to use a tool, so it returns "tools". Otherwise, it returns "end".
+
+ainvoke(self, ...): This is the public method used by the API to run the agent with user input.
+
+🛠️ tools.py - The Agent's Toolbox
+This file defines the custom functions that the agent can use to interact with the outside world (in this case, a fake order API).
+
+Purpose: To provide reliable, callable functions (tools) that the agent can use to perform specific actions.
+
+Key Components:
+@tool Decorator
+
+This decorator from LangChain is what turns a regular Python function into a "tool" that the LLM can see and use. The model reads the function's name, its arguments, and its docstring to understand what it does.
+
+The docstring is extremely important. It's the primary instruction manual for the AI. For example, the docstring for lookup_order_status tells the model that it needs an order_id and what the function returns.
+
+lookup_order_status(order_id: str) -> str
+
+Action: Takes an order_id and makes an API call to http://<...>/order-status/{order_id} to get the status.
+
+Error Handling: It is built to be robust. It handles cases where the order is not found (404 error) or if there's a network issue, returning a user-friendly message in each case.
+
+Output: Returns a clear string with the order status and tracking ID if available (e.g., "✅ The status for order ID '10' is: 'Shipped'. Tracking ID: T-12345").
+
+lookup_transit_status(tracking_id: str) -> str
+
+Action: Takes a tracking_id and makes an API call to get the latest shipping location and status.
+
+Error Handling: Similar to the order lookup, it handles not-found errors and network problems gracefully.
+
+Output: Returns a string with the transit details (e.g., "🚚 Transit status for tracking ID 'T-12345': In Transit at New Delhi Hub.").
+
+🌐 api.py - The Web Server
+This file creates the web-facing API using FastAPI, allowing users to communicate with the agent.
+
+Purpose: To expose the agent's functionality over the web, manage user sessions, and handle incoming requests and outgoing responses.
+
+Key Components:
+app = FastAPI(...)
+
+Initializes the FastAPI application, giving it a title and version.
+
+agent = EcommerceAgent()
+
+Creates an instance of our EcommerceAgent from agent.py. This single agent will handle all user requests.
+
+conversation_histories = defaultdict(...)
+
+This is a clever way to manage separate conversations for different users. A defaultdict is a dictionary that provides a default value for a key that doesn't exist yet.
+
+lambda: deque(maxlen=CONVERSATION_HISTORY_LIMIT): For each new user (session_id), it creates a deque (a type of list optimized for adding/removing from both ends) with a maximum length. This ensures the conversation history doesn't grow infinitely, saving memory.
+
+@app.post("/ask")
+
+This defines the main API endpoint for chatting with the agent. It listens for POST requests at the /ask URL.
+
+It expects a JSON payload with a message and a session_id.
+
+It retrieves the conversation history for that session_id.
+
+It calls agent.ainvoke() with the latest message and its history.
+
+It saves the agent's response back into the history for that session.
+
+Finally, it returns the agent's reply as a JSON response.
+
+/ and /health Endpoints
+
+These are simple utility endpoints. / provides basic info about the API, and /health can be used to check if the server is running correctly.
+
+⚙️ config.py - The Configuration Hub
+This file centralizes all the important settings and secrets for the application, making it easy to manage and change them without editing the core logic.
+
+Purpose: To store and manage all configuration variables in one place.
+
+Key Components:
+load_dotenv()
+
+This function loads variables from a .env file in your project directory. This is a best practice for keeping sensitive information like API keys out of your source code.
+
+Configuration Variables
+
+ORDER_API_BASE_URL: The URL of the mock order API.
+
+HOST & PORT: The address and port for running the FastAPI server.
+
+LangChain/Groq Settings: API keys, project names, and endpoints needed to connect to the AI services.
+
+DEFAULT_MODEL: Specifies which Groq model to use.
+
+CONVERSATION_HISTORY_LIMIT: Sets the maximum number of messages to remember per user session.
+
+setup_environment()
+
+A helper function that takes the variables defined in this file and sets them as system environment variables. This is how libraries like LangChain automatically find their API keys and settings.
+
+🚀 main.py - The Application Launcher
+This is the simplest file but a very important one. It's the main entry point that starts the entire application.
+
+Purpose: To initialize the environment and launch the Uvicorn web server that runs the FastAPI application.
+
+Key Components:
+async def main()
+
+The main asynchronous function that orchestrates the startup process.
+
+setup_environment(): Calls the function from config.py to set up all necessary environment variables.
+
+langchain.debug = True: Enables detailed logging from LangChain, which is very helpful for debugging what the agent is thinking and doing.
+
+uvicorn.Config(...) and uvicorn.Server(...): These lines configure and create an instance of the Uvicorn server, telling it to run the app object from api.py on the configured HOST and PORT.
+
+await server.serve(): Starts the server and keeps it running to listen for requests.
+
+if __name__ == "__main__":
+
+This is standard Python practice. It ensures that the asyncio.run(main()) code only executes when you run the script directly (e.g., python main.py), not when it's imported by another file.
+
+The asyncio.set_event_loop_policy(...) line is a specific fix required for running asyncio on Windows with newer Python versions.
+
+💡 How It All Works Together: A User's Journey
+A user sends a message like "where is my order?" to the http://127.0.0.1:8080/ask endpoint.
+
+api.py receives the request. It finds or creates a conversation history for the user's session_id and calls agent.ainvoke().
+
+agent.py takes over. The LangGraph workflow starts at the "agent" node.
+
+The _model_call function sends the conversation history and the system prompt to the Groq LLM. The LLM analyzes the message and realizes it needs an order ID. It generates a response like, "I can help with that! What is your order ID?"
+
+The _should_continue function checks the LLM's response. It sees no tool call, so it routes to "end".
+
+The agent's final response ("What is your order ID?") is sent back to api.py, which returns it to the user.
+
+The user replies with "my ID is 25".
+
+The process repeats. This time, when the LLM gets the message, it sees it has the order ID. It decides to use the lookup_order_status tool and its response includes a tool_calls object like tool_calls=[{'name': 'lookup_order_status', 'args': {'order_id': '25'}}].
+
+This time, _should_continue sees the tool call and routes the graph to the "tools" node.
+
+The ToolNode executes the lookup_order_status('25') function from tools.py.
+
+The tool communicates with the external API and gets a result, like "✅ The status for order ID '25' is: 'Shipped'. Tracking ID: T-98765".
+
+The graph follows the edge from "tools" back to the "agent" node. The tool's output is added to the conversation history.
+
+The LLM is called again, now with the knowledge that the order has shipped and has a tracking ID. It formulates a final, user-friendly response, like "Great news! Your order #25 has shipped. The tracking ID is T-98765. Would you like me to check its current location?"
+
+_should_continue sees no new tool call and routes to "end". The final message is sent to the user.
